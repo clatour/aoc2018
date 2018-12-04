@@ -3,22 +3,54 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
-// Day 3
-// 2d grid
-// #123 @ 3,2: 5x4
-// id   @ X,Y: WxH
+// Day 4
+// [1518-05-19 00:01] Guard #1801 begins shift
 
-type Claim struct {
-	ID string
-	X  int
-	Y  int
-	W  int
-	H  int
+type Entry struct {
+	Time time.Time
+	Text string
+}
+
+type Guard struct {
+	ID int
+	Histogram [60]int // Minutes in the midnight hour
+}
+
+func (g Guard) timeAsleep() int {
+	return sum(g.Histogram[:])
+}
+
+func (g Guard) mostCommonSleepTime() (int, int) {
+	return max(g.Histogram[:])
+}
+
+type OrderedEntries []Entry
+func (a OrderedEntries) Len() int { return len(a) }
+func (a OrderedEntries) Swap(i, j int)  { a[i], a[j] = a[j], a[i] }
+func (a OrderedEntries) Less(i, j int) bool { return a[i].Time.Before(a[j].Time) }
+
+
+type OrderedBySleep []Guard
+func (a OrderedBySleep) Len() int { return len(a) }
+func (a OrderedBySleep) Swap(i, j int)  { a[i], a[j] = a[j], a[i] }
+func (a OrderedBySleep) Less(i, j int) bool { return a[i].timeAsleep() < a[j].timeAsleep() }
+
+type OrderedByMinuteAsleep []Guard
+func (a OrderedByMinuteAsleep) Len() int { return len(a) }
+func (a OrderedByMinuteAsleep) Swap(i, j int)  { a[i], a[j] = a[j], a[i] }
+func (a OrderedByMinuteAsleep) Less(i, j int) bool {
+	w, _ := a[i].mostCommonSleepTime()
+	y, _ := a[j].mostCommonSleepTime()
+
+	return w < y
 }
 
 func main() {
@@ -27,98 +59,95 @@ func main() {
 		fmt.Println(err)
 	}
 
-	claims := make([]Claim, 0)
+	entries := parse(f)
+
+	guards := make(map[string]*Guard)
+	currentGuardId := ""
+	var currentGuard *Guard
+	var ok bool
+	begin, end := -1, -1
+
+	for _, v := range entries {
+		// Guard Identifier
+		if v.Text[0:5] == "Guard" {
+			// Change of guard, reset begin and end times
+			begin, end = -1, -1
+			currentGuardId = strings.Split(v.Text[7:], " ")[0]
+			currentGuard, ok = guards[currentGuardId]
+			if !ok {
+				id, err := strconv.Atoi(currentGuardId)
+				if err != nil {
+					fmt.Println(err)
+				}
+				currentGuard = &Guard{ID: id}
+				guards[currentGuardId] = currentGuard
+			}
+		}
+
+		// Falls asleep
+		if v.Text[0:5] == "falls" {
+			begin = v.Time.Minute()
+		}
+
+		if v.Text[0:5] == "wakes" {
+			end = v.Time.Minute()
+		}
+
+		if begin != -1 && end != -1 {
+			for i := begin; i<end; i++ {
+				currentGuard.Histogram[i] += 1
+			}
+			begin, end = -1, -1
+		}
+	}
+
+	guardSlice := make([]Guard, 0)
+
+	for _, v := range guards {
+		guardSlice = append(guardSlice, *v)
+	}
+
+	// Part 1
+	sort.Sort(OrderedBySleep(guardSlice))
+	g := guardSlice[len(guardSlice) - 1]
+	times, minute := max(g.Histogram[:])
+	fmt.Println("Guard", g.ID, minute, times, g.ID * minute)
+
+	// Part 2
+	sort.Sort(OrderedByMinuteAsleep(guardSlice))
+	g = guardSlice[len(guardSlice) - 1]
+	times, minute = max(g.Histogram[:])
+	fmt.Println("Guard", g.ID, minute, times, g.ID * minute)
+}
+
+func max(i []int) (int, int) {
+	m, index := 0, 0
+	for k, v := range i {
+		if v > m {m = v; index = k}
+	}
+	return m, index
+}
+
+func sum(i []int) int {
+	s := 0
+	for _, v := range i {
+		s += v
+	}
+	return s
+}
+
+func parse(f io.Reader) []Entry {
+	entries := make(OrderedEntries, 0)
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		s := scanner.Text()
-
-		s1 := strings.Split(s, "@")
-		s2 := strings.Split(s1[1], ":")
-		coords := strings.Split(s2[0], ",")
-
-		x, y := splitCoords(coords)
-		dims := strings.Split(s2[1], "x")
-
-		w, h := splitDims(dims, err)
-		claims = append(claims, Claim{ID: strings.TrimSpace(s1[0]), X: x, Y: y, W: w, H: h})
-	}
-
-	maxX, maxY := 0, 0
-	for _, c := range claims {
-		x, y := c.X+c.W, c.Y+c.H
-		if x > maxX {
-			maxX = x
+		layout := "2006-01-02 15:04"
+		t, err := time.Parse(layout, s[1:17])
+		if err != nil {
+			fmt.Println(err)
 		}
-		if y > maxY {
-			maxY = y
-		}
+		entries = append(entries, Entry{Time: t, Text: s[19:]})
 	}
-
-	grid := make([]int, maxX*maxY)
-
-	for _, c := range claims {
-		for j := c.Y; j < (c.Y + c.H); j++ {
-			for i := c.X; i < (c.X + c.W); i++ {
-				//fmt.Println(i + j * maxX)
-				grid[i+j*maxX] += 1
-			}
-		}
-	}
-
-	// Check how many square inches of claims overlap
-	overlap := totalOverlap(grid)
-	fmt.Println(overlap)
-
-	// Check if a claim doesn't overlap
-	for _, c := range claims {
-		if soleOwnership(c, grid, maxX) {
-			fmt.Println(c.ID)
-		}
-	}
-}
-
-func totalOverlap(grid []int) int {
-	overlap := 0
-	for _, v := range grid {
-		if v >= 2 {
-			overlap += 1
-		}
-	}
-	return overlap
-}
-
-func soleOwnership(c Claim, grid []int, maxX int) bool {
-	for j := c.Y; j < (c.Y + c.H); j++ {
-		for i := c.X; i < (c.X + c.W); i++ {
-			//fmt.Println(i + j * maxX)
-			if grid[i+j*maxX] != 1 {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func splitDims(dims []string, err error) (int, int) {
-	w, err := strconv.Atoi(strings.TrimSpace(dims[0]))
-	if err != nil {
-		fmt.Println(err)
-	}
-	h, err := strconv.Atoi(strings.TrimSpace(dims[1]))
-	if err != nil {
-		fmt.Println(err)
-	}
-	return w, h
-}
-
-func splitCoords(coords []string) (int, int) {
-	x, err := strconv.Atoi(strings.TrimSpace(coords[0]))
-	if err != nil {
-		fmt.Println(err)
-	}
-	y, err := strconv.Atoi(strings.TrimSpace(coords[1]))
-	if err != nil {
-		fmt.Println(err)
-	}
-	return x, y
+	sort.Sort(OrderedEntries(entries))
+	return entries
 }
