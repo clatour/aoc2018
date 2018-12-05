@@ -1,153 +1,75 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"io"
-	"os"
-	"sort"
-	"strconv"
-	"strings"
-	"time"
+	"io/ioutil"
 )
 
-// Day 4
-// [1518-05-19 00:01] Guard #1801 begins shift
-
-type Entry struct {
-	Time time.Time
-	Text string
-}
-
-type Guard struct {
-	ID int
-	Histogram [60]int // Minutes in the midnight hour
-}
-
-func (g Guard) timeAsleep() int {
-	return sum(g.Histogram[:])
-}
-
-func (g Guard) mostCommonSleepTime() (int, int) {
-	return max(g.Histogram[:])
-}
-
-type OrderedEntries []Entry
-func (a OrderedEntries) Len() int { return len(a) }
-func (a OrderedEntries) Swap(i, j int)  { a[i], a[j] = a[j], a[i] }
-func (a OrderedEntries) Less(i, j int) bool { return a[i].Time.Before(a[j].Time) }
-
-
-type OrderedBySleep []Guard
-func (a OrderedBySleep) Len() int { return len(a) }
-func (a OrderedBySleep) Swap(i, j int)  { a[i], a[j] = a[j], a[i] }
-func (a OrderedBySleep) Less(i, j int) bool { return a[i].timeAsleep() < a[j].timeAsleep() }
-
-type OrderedByMinuteAsleep []Guard
-func (a OrderedByMinuteAsleep) Len() int { return len(a) }
-func (a OrderedByMinuteAsleep) Swap(i, j int)  { a[i], a[j] = a[j], a[i] }
-func (a OrderedByMinuteAsleep) Less(i, j int) bool {
-	w, _ := a[i].mostCommonSleepTime()
-	y, _ := a[j].mostCommonSleepTime()
-
-	return w < y
-}
+// Day 5
 
 func main() {
-	f, err := os.Open("input.txt")
+	f, err := ioutil.ReadFile("input.txt")
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	entries := parse(f)
+	// Strip trailing newline
+	f = f[:len(f)-1]
 
-	guards := make(map[string]*Guard)
-	currentGuardId := ""
-	var currentGuard *Guard
-	var ok bool
-	begin, end := -1, -1
+	// Part 2: preprocess the bytes, stripping types
+	// ex. strip all A/a, perrform reaction, measure length
 
-	for _, v := range entries {
-		// Guard Identifier
-		if v.Text[0:5] == "Guard" {
-			// Change of guard, reset begin and end times
-			begin, end = -1, -1
-			currentGuardId = strings.Split(v.Text[7:], " ")[0]
-			currentGuard, ok = guards[currentGuardId]
-			if !ok {
-				id, err := strconv.Atoi(currentGuardId)
-				if err != nil {
-					fmt.Println(err)
+	// For all uppercase chars
+	for i := 90; i >= 65; i-- {
+		// Create a new slice
+		s := make([]byte, len(f))
+		copy(s, f)
+		for j := len(s) - 1; j >= 0; j-- {
+			b := int(s[j])
+			if b == i || b == i+32 {
+				s = append(s[:j], s[j+1:]...)
+			}
+		}
+		result := performReaction(s)
+
+		// Manually copy/paste shortest len
+		fmt.Println("Final length with", string(i)+"/"+string(i+32), "removed:", len(result))
+	}
+}
+
+// Part 1: "Reaction loop"
+func performReaction(f []byte) []byte {
+	prev := 0x00
+	deleted := false
+
+	for {
+		// Do a pass over the slice, deleting as we go
+		for i := len(f) - 1; i >= 0; i-- {
+			b := f[i]
+			// A + 32 == a || a - 32 == A
+			if int(b) == int(prev)+32 || int(b) == int(prev)-32 {
+				f = append(f[:i], f[i+2:]...)
+				deleted = true
+				// optimization to set the prev back one, as f[i] has changed
+				if !(i+1 > len(f)) {
+					prev = int(f[i])
+				} else {
+					prev = 0x00
 				}
-				currentGuard = &Guard{ID: id}
-				guards[currentGuardId] = currentGuard
+			} else {
+				prev = int(b)
 			}
 		}
 
-		// Falls asleep
-		if v.Text[0:5] == "falls" {
-			begin = v.Time.Minute()
+		// If we deleted a `unit`, reset and go again
+		if deleted {
+			deleted = false
+			prev = 0x00
+		} else {
+			break
 		}
 
-		if v.Text[0:5] == "wakes" {
-			end = v.Time.Minute()
-		}
-
-		if begin != -1 && end != -1 {
-			for i := begin; i<end; i++ {
-				currentGuard.Histogram[i] += 1
-			}
-			begin, end = -1, -1
-		}
 	}
 
-	guardSlice := make([]Guard, 0)
-
-	for _, v := range guards {
-		guardSlice = append(guardSlice, *v)
-	}
-
-	// Part 1
-	sort.Sort(OrderedBySleep(guardSlice))
-	g := guardSlice[len(guardSlice) - 1]
-	times, minute := max(g.Histogram[:])
-	fmt.Println("Guard", g.ID, minute, times, g.ID * minute)
-
-	// Part 2
-	sort.Sort(OrderedByMinuteAsleep(guardSlice))
-	g = guardSlice[len(guardSlice) - 1]
-	times, minute = max(g.Histogram[:])
-	fmt.Println("Guard", g.ID, minute, times, g.ID * minute)
-}
-
-func max(i []int) (int, int) {
-	m, index := 0, 0
-	for k, v := range i {
-		if v > m {m = v; index = k}
-	}
-	return m, index
-}
-
-func sum(i []int) int {
-	s := 0
-	for _, v := range i {
-		s += v
-	}
-	return s
-}
-
-func parse(f io.Reader) []Entry {
-	entries := make(OrderedEntries, 0)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		s := scanner.Text()
-		layout := "2006-01-02 15:04"
-		t, err := time.Parse(layout, s[1:17])
-		if err != nil {
-			fmt.Println(err)
-		}
-		entries = append(entries, Entry{Time: t, Text: s[19:]})
-	}
-	sort.Sort(OrderedEntries(entries))
-	return entries
+	return f
 }
